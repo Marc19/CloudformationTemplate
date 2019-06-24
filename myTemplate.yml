@@ -1,0 +1,655 @@
+AWSTemplateFormatVersion: 2010-09-09
+Metadata:
+  AWS::CloudFormation::Interface: 
+    ParameterGroups: 
+      - 
+        Label: 
+          default: "Message and Stage"
+        Parameters: 
+          - Message
+          - Stage
+
+      - 
+        Label: 
+          default: "Network Configuration"
+        Parameters: 
+          - VPC
+          - SubnetId
+          - OtherSubnetId
+
+      - 
+        Label: 
+          default: "Source control (Optional)"
+        Parameters: 
+          - ExistingCodeCommitRepositoryName
+          - ExistingBranchName
+    
+    ParameterLabels:
+      SubnetId: 
+        default: Subnet ID (Select 2)
+      # OtherSubnetId: 
+      #   default: Other Subnet ID
+      ExistingCodeCommitRepositoryName:
+        default: Existing CodeCommit Repository Name
+      ExistingBranchName:
+        default: Existing Branch Name
+  
+Parameters:
+    VPC:
+        Type: AWS::EC2::VPC::Id
+        Description: Select a VPC that allows instances to access the Internet.
+
+    SubnetId:
+        Type: List<AWS::EC2::Subnet::Id>
+        Description: Select at two subnets in your selected VPC.
+
+    # OtherSubnetId:
+    #     Type: AWS::EC2::Subnet::Id
+    #     Description: Choose another subnet for the load balancer. Make sure it is not the same as 'Subnet ID'
+    
+    Message:
+        AllowedPattern: '[\w\.-]+'
+        Description: The name of the message
+        Type: String
+        
+    Stage:
+        Description: The name of the stage
+        Type: String
+
+    ExistingCodeCommitRepositoryName:
+        Description: Enter existing name for your codecommit repo or leave it blank and a new repository will be created for you		
+        Default: ''
+        Type: String
+
+    ExistingBranchName:
+        Description: Enter the name of the branch of your repo or leave it to blank		
+        Default: ''
+        Type: String
+
+
+Conditions: 
+    IsStageEqualProd: !Equals [ !Ref Stage, 'prod' ]
+    CreateNewCodeCommitRepo: !Equals [ !Ref ExistingCodeCommitRepositoryName, '' ]
+    CreateNewBranch: !Equals [ !Ref ExistingBranchName, '' ]
+
+Resources:
+    CodeCommitRepository:
+        Type: AWS::CodeCommit::Repository
+        Condition: CreateNewCodeCommitRepo
+        Properties:
+            RepositoryName: !Ref Message
+            # Triggers:
+            #   - 
+            #     Name: BranchTrigger
+            #     Branches:
+            #     - !If
+            #       - CreateNewBranch
+            #       - !If [IsStageEqualProd, 'master', !Ref Stage]
+            #       - !Ref ExistingBranchName 
+    
+    ECRRepository:
+        Type: AWS::ECR::Repository
+        Properties:
+          RepositoryName: !Join ['-', [!Ref Message, !Ref Stage, 'repo']]
+        
+    ECSTaskExecutionRole:
+        Type: AWS::IAM::Role
+        Properties:
+            RoleName: !Sub ${AWS::StackName}-iam-taskexecution-role
+            AssumeRolePolicyDocument:
+                Statement:
+                - Effect: Allow
+                  Principal:
+                    Service:
+                        - "ecs-tasks.amazonaws.com"
+                  Action:
+                    - sts:AssumeRole
+            Path: /
+            Policies:
+                - PolicyName: policy-for-ecs-task-definition
+                  PolicyDocument:
+                    Statement:
+                    - Effect: Allow
+                      Action: [
+                        "ecr:GetAuthorizationToken",
+                        "ecr:BatchCheckLayerAvailability",
+                        "ecr:GetDownloadUrlForLayer",
+                        "ecr:BatchGetImage",
+                        "logs:CreateLogStream",
+                        "logs:PutLogEvents"]
+                      Resource: "*"
+
+    ECSTaskRole:
+        Type: AWS::IAM::Role
+        Properties:
+            RoleName: !Sub ${AWS::StackName}-iam-task-role
+            AssumeRolePolicyDocument:
+                Statement:
+                - Effect: Allow
+                  Principal:
+                    Service:
+                        - "ecs-tasks.amazonaws.com"
+                  Action:
+                    - sts:AssumeRole
+            Path: /
+            Policies:
+                - PolicyName: another-policy-for-ecs-task-definition
+                  PolicyDocument:
+                    Statement:
+                    - Effect: Allow
+                      Action: [
+                        "ecr:*",
+                        "cloudtrail:LookupEvents"]
+                      Resource: "*"
+                    
+                    - Effect: Allow
+                      Action: [
+                        "s3:*"]
+                      Resource: "*"
+
+    ECSTaskDefinition:
+        Type: AWS::ECS::TaskDefinition
+        Properties:
+            RequiresCompatibilities: 
+                - FARGATE
+            TaskRoleArn: !GetAtt [ ECSTaskRole, Arn ]
+            NetworkMode: awsvpc
+            ExecutionRoleArn: !GetAtt [ ECSTaskExecutionRole, Arn ]
+            Memory: "512"
+            Cpu: "256"
+            ContainerDefinitions:
+                - 
+                    Name: !Join
+                        - ''
+                        -
+                            - !Ref Message
+                            - 'Container'
+                    LogConfiguration: 
+                        LogDriver: awslogs
+                        Options:
+                            awslogs-region: !Ref "AWS::Region"
+                            awslogs-group: !Ref LogGroup
+                            awslogs-stream-prefix : 'ecs'
+                    Image: google/nodejs-hello
+                    MemoryReservation: 512
+                    PortMappings:
+                        -
+                            ContainerPort: 80
+
+    LogGroup: 
+        Type: AWS::Logs::LogGroup
+        Properties: 
+            LogGroupName: !Join ['/', ['/ecs', 'shouldBeTaskDefinitionName' ]]
+
+    ECSCluster:
+        Type: AWS::ECS::Cluster
+        Properties: 
+            ClusterName: !Join
+                - '-'
+                - 
+                    - !Ref Message
+                    - !Ref Stage
+
+    SecurityGroup:
+        Type: AWS::EC2::SecurityGroup
+        Properties: 
+            GroupName: !Join
+                - '-'
+                -
+                    - !Ref Message
+                    - 'security-group'
+            GroupDescription: 'A security group to be used by ecs service'
+            VpcId: !Ref VPC
+            SecurityGroupIngress:
+                -
+                    CidrIp: 0.0.0.0/0
+                    IpProtocol: tcp
+                    FromPort: 80
+                    ToPort: 80
+
+    ECSService:
+        Type: AWS::ECS::Service
+        DependsOn:
+            - ListenerHTTP
+        Properties:
+            TaskDefinition: !Ref ECSTaskDefinition
+            LaunchType: FARGATE
+            Cluster: !Ref ECSCluster
+            ServiceName: !Join
+                - '-'
+                - 
+                    - !Ref Message
+                    - !Ref Stage
+                    - 'service'
+            DesiredCount: 0
+            DeploymentConfiguration:
+                MaximumPercent: 200
+                MinimumHealthyPercent: 100
+            
+            NetworkConfiguration:
+                AwsvpcConfiguration:
+                    AssignPublicIp: ENABLED
+                    Subnets: 
+                        !Ref SubnetId
+                        # - !Ref SubnetId
+                    SecurityGroups:
+                        - !Ref SecurityGroup
+            
+            LoadBalancers:
+                - 
+                    ContainerName: !Join
+                        - ''
+                        -
+                            - !Ref Message
+                            - 'Container'
+                    ContainerPort: 80
+                    TargetGroupArn: !Ref TargetGroup
+
+    TargetGroup:
+        Type: AWS::ElasticLoadBalancingV2::TargetGroup
+        Properties:
+            Name: !Join ['-', [!Ref Message, 'TargetGroup']]
+            Port: 80
+            Protocol: HTTP
+            TargetType: ip
+            VpcId: !Ref VPC
+
+    ListenerHTTP:
+        Type: AWS::ElasticLoadBalancingV2::Listener
+        Properties:
+            DefaultActions:
+                - 
+                    TargetGroupArn: !Ref TargetGroup
+                    Type: forward
+            LoadBalancerArn: !Ref LoadBalancer
+            Port: 80
+            Protocol: HTTP
+
+    LoadBalancer:
+        Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+        Properties:
+            Name: !Join ['-', [!Ref Message, 'LoadBalancer']]
+            Type: application 
+            IpAddressType: ipv4
+            Scheme: internet-facing
+            SecurityGroups:
+                - !Ref SecurityGroup
+            Subnets:
+                !Ref SubnetId
+                # - !Ref SubnetId
+                # - !Ref OtherSubnetId
+
+    S3BucketForArtifacts:
+        Type: AWS::S3::Bucket
+        Properties:
+            BucketName: !Join
+                - '-'
+                -
+                    - !Ref Message
+                    - codepipeline-artifacts
+            
+    CodeBuildServiceRole:
+        Type: AWS::IAM::Role
+        Properties:
+            RoleName: !Sub ${AWS::StackName}-iam-role-codebuild
+            AssumeRolePolicyDocument:
+                Statement:
+                - Effect: Allow
+                  Principal:
+                    Service:
+                        - codebuild.amazonaws.com
+                  Action:
+                    - sts:AssumeRole
+            Path: /
+            Policies:
+                - PolicyName: policy-for-codebuild
+                  PolicyDocument:
+                    Statement:
+                    - Effect: Allow
+                      Action: [
+                        "logs:CreateLogGroup",
+                        "logs:CreateLogStream",
+                        "logs:PutLogEvents",
+                        "logs:DescribeLogStreams"]
+                      Resource: "arn:aws:logs:*:*:*"
+                    - Effect: Allow
+                      Action: [
+                        "ecr:BatchCheckLayerAvailability",
+                        "ecr:GetDownloadUrlForLayer",
+                        "ecr:GetRepositoryPolicy",
+                        "ecr:DescribeRepositories",
+                        "ecr:ListImages",
+                        "ecr:DescribeImages",
+                        "ecr:BatchGetImage",
+                        "ecr:CompleteLayerUpload",
+                        "ecr:GetAuthorizationToken",
+                        "ecr:InitiateLayerUpload",
+                        "ecr:PutImage",
+                        "ecr:UploadLayerPart"]
+                      Resource: "*"
+                    - Effect: Allow
+                      Action: ["sns:Publish"]
+                      Resource: "*"
+                    - Effect: Allow
+                      Action: [
+                        "s3:PutObject",
+                        "s3:GetObject",
+                        "s3:GetObjectVersion"]
+                      Resource: !Join ["", [!GetAtt S3BucketForArtifacts.Arn, "/*"]]
+
+    CodeBuildProject:
+        Type: AWS::CodeBuild::Project
+        Properties:
+            Name: !Join
+                - '-'
+                - 
+                    - !Ref Message
+                    - 'BuildProject'
+            ServiceRole: !GetAtt [ CodeBuildServiceRole, Arn ]
+            Artifacts:
+                Type: CODEPIPELINE
+            Environment:
+                Type: LINUX_CONTAINER
+                ComputeType: BUILD_GENERAL1_SMALL
+                Image: aws/codebuild/standard:2.0
+                PrivilegedMode: true
+                EnvironmentVariables:
+                    - Name: ECR_REPO_URL
+                      Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepository}"
+
+                    - Name: CONTAINER_NAME
+                      Value: !Join ['', [!Ref Message, 'Container']]
+            Source:
+                Type: CODEPIPELINE
+            TimeoutInMinutes: 60    
+
+    CodePipeline:
+        Type: AWS::CodePipeline::Pipeline
+        Properties: 
+            Name: !Join
+                - ''
+                -   
+                    - !Ref Message
+                    - 'Pipeline'
+            RoleArn: !GetAtt [CodePipelineServiceRole, Arn]
+            ArtifactStore:
+                Type: S3
+                Location: !Ref S3BucketForArtifacts
+            Stages:
+                - 
+                    Name: Source
+                    Actions:
+                        -
+                            Name: SourceAction
+                            ActionTypeId:
+                                Category: Source
+                                Owner: AWS
+                                Version: 1
+                                Provider: CodeCommit
+                            OutputArtifacts:
+                                - Name: SourceOutput
+                            Configuration:
+                                BranchName: !If
+                                  - CreateNewBranch
+                                  - !If [IsStageEqualProd, 'master', !Ref Stage]
+                                  - !Ref ExistingBranchName                      
+                                RepositoryName: !If 
+                                  - CreateNewCodeCommitRepo
+                                  - !GetAtt [CodeCommitRepository, Name ]
+                                  - !Ref ExistingCodeCommitRepositoryName
+                                PollForSourceChanges: true
+                            RunOrder: 1
+                            
+                - 
+                    Name: Build
+                    Actions:
+                        -
+                            Name: BuildAction
+                            ActionTypeId:
+                                Category: Build
+                                Owner: AWS
+                                Version: 1
+                                Provider: CodeBuild
+                            InputArtifacts:
+                                - Name: SourceOutput
+                            OutputArtifacts:
+                                - Name: BuildOutput
+                            Configuration:
+                                ProjectName: !Ref CodeBuildProject
+                            RunOrder: 1
+
+                - 
+                    Name: Deploy
+                    Actions:
+                        -
+                            Name: DeployAction
+                            ActionTypeId:
+                                Category: Deploy
+                                Owner: AWS
+                                Version: 1
+                                Provider: ECS
+                            InputArtifacts:
+                                - Name: BuildOutput
+                            Configuration:
+                                ClusterName: !Ref ECSCluster
+                                ServiceName: !GetAtt 
+                                    - ECSService
+                                    - Name
+                            RunOrder: 1  
+
+    CodePipelineServiceRole:
+        Type: 'AWS::IAM::Role'
+        Properties:
+            RoleName: !Sub ${AWS::StackName}-iam-role-codepipeline-service-role
+            AssumeRolePolicyDocument:
+                Version: 2012-10-17
+                Statement:
+                - Effect: Allow
+                  Principal:
+                    Service:
+                        - codepipeline.amazonaws.com
+                  Action: 'sts:AssumeRole'
+            Path: /
+            Policies:
+                - PolicyName: AWS-CodePipeline-Service-3
+                  PolicyDocument:
+                    Version: 2012-10-17
+                    Statement:
+                    - Effect: Allow
+                      Action:
+                        - 'codecommit:CancelUploadArchive'
+                        - 'codecommit:GetBranch'
+                        - 'codecommit:GetCommit'
+                        - 'codecommit:GetUploadArchiveStatus'
+                        - 'codecommit:UploadArchive'
+                      Resource: '*'
+                    - Effect: Allow
+                      Action:
+                        - 'codedeploy:CreateDeployment'
+                        - 'codedeploy:GetApplicationRevision'
+                        - 'codedeploy:GetDeployment'
+                        - 'codedeploy:GetDeploymentConfig'
+                        - 'codedeploy:RegisterApplicationRevision'
+                      Resource: '*'
+                    - Effect: Allow
+                      Action:
+                        - 'codebuild:BatchGetBuilds'
+                        - 'codebuild:StartBuild'
+                      Resource: '*'
+                    - Effect: Allow
+                      Action:
+                        - 'devicefarm:ListProjects'
+                        - 'devicefarm:ListDevicePools'
+                        - 'devicefarm:GetRun'
+                        - 'devicefarm:GetUpload'
+                        - 'devicefarm:CreateUpload'
+                        - 'devicefarm:ScheduleRun'
+                      Resource: '*'
+                    - Effect: Allow
+                      Action:
+                        - 'lambda:InvokeFunction'
+                        - 'lambda:ListFunctions'
+                      Resource: '*'
+                    - Effect: Allow
+                      Action:
+                        - 'iam:PassRole'
+                      Resource: '*'
+                    - Effect: Allow
+                      Action:
+                        - 'elasticbeanstalk:*'
+                        - 'ec2:*'
+                        - 'elasticloadbalancing:*'
+                        - 'autoscaling:*'
+                        - 'cloudwatch:*'
+                        - 's3:*'
+                        - 'sns:*'
+                        - 'cloudformation:*'
+                        - 'rds:*'
+                        - 'sqs:*'
+                        - 'ecs:*'
+                      Resource: '*'
+
+    Dashboard:
+        Type: AWS::CloudWatch::Dashboard
+        Properties: 
+          DashboardName: !Join
+            - '-'
+            - 
+                - !Ref Message
+                - !Ref Stage
+                - 'dashboard'
+          DashboardBody: !Join
+            - ''
+            -
+              - '{
+                    "widgets": [
+                        {
+                            "type": "metric",
+                            "x": 0,
+                            "y": 0,
+                            "width": 24,
+                            "height": 6,
+                            "properties": {
+                                "metrics": [
+                                    [ "AWS/ECS", "CPUUtilization", "ServiceName", "'         
+              - !GetAtt [ ECSService, Name ] 
+              - '", "ClusterName", "'
+              - !Ref ECSCluster
+              - '", { "period": 60 } ],
+                                    [ ".", "MemoryUtilization", ".", ".", ".", ".", { "period": 60 } ]
+                                ],
+                                "view": "timeSeries",
+                                "stacked": false,
+                                "region": "'
+              - !Ref "AWS::Region"
+              - '",
+                              "title": "ECS utilization"
+                          }
+                      },
+                      {
+                          "type": "metric",
+                          "x": 0,
+                          "y": 6,
+                          "width": 24,
+                          "height": 6,
+                          "properties": {
+                              "metrics": [
+                                  [ "AWS/ApplicationELB", "RequestCount", "TargetGroup", "'
+              - !GetAtt [ "TargetGroup", "TargetGroupFullName" ]
+              - '", "LoadBalancer", "'
+              - !GetAtt [ "LoadBalancer", "LoadBalancerFullName" ]
+              - '", { "stat": "Sum", "period": 60, "color": "#2ca02c" } ],
+                                [ ".", "RequestCountPerTarget", ".", ".", ".", ".", { "stat": "Sum", "period": 60, "color": "#1f77b4" } ],
+                                [ ".", "HTTPCode_ELB_5XX_Count", "LoadBalancer", "'
+              - !GetAtt [ "LoadBalancer", "LoadBalancerFullName" ]
+              - '", { "period": 60, "stat": "Sum", "color": "#d62728" } ]
+                            ],
+                            "view": "timeSeries",
+                            "stacked": false,
+                            "region": "'
+              - !Ref "AWS::Region"
+              - '",
+                          "title": "Number of requests to ELB",
+                          "period": 300
+                      }
+                  },
+                  {
+                      "type": "metric",
+                      "x": 0,
+                      "y": 12,
+                      "width": 24,
+                      "height": 6,
+                      "properties": {
+                          "view": "timeSeries",
+                          "stacked": false,
+                          "metrics": [
+                              [ "AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", "' 
+              - !GetAtt [ "LoadBalancer", "LoadBalancerFullName" ]
+              - '" ]
+                        ],
+                        "region": "'
+              - !Ref "AWS::Region"
+              - '",
+                        "title": "Target Response time"
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 0,
+                    "y": 18,
+                    "width": 24,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/ApplicationELB", "ConsumedLCUs", "LoadBalancer", "'
+              - !GetAtt [ "LoadBalancer", "LoadBalancerFullName" ]
+              - '", { "stat": "Sum", "period": 60, "color": "#ff7f0e" } ]
+                      ],
+                      "view": "timeSeries",
+                      "stacked": false,
+                      "region": "'
+              - !Ref "AWS::Region"
+              - '",
+                      "title": "Used LCUs ",
+                      "period": 300
+                  }
+              }
+          ]
+      }'
+              
+
+
+Outputs:
+  CodeCommitRepositoryUrl:
+    Condition: CreateNewCodeCommitRepo
+    Description: The url for the codecommit repository
+    Value: !GetAtt [ CodeCommitRepository, CloneUrlHttp ]
+
+  # ECRRepositoryUrl:
+  #   Description: The url for the ECR repository. Use this in the buildspec file in your project
+  #   Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepository}"
+
+  ContainerName:
+    Description: The name of the created container. Use this name in the buildspec file in your project
+    Value: !Join ['', [!Ref Message, 'Container']]
+
+  # CodePipelineName:
+  #   Description: The name of the created pipeline
+  #   Value: !Ref CodePipeline
+
+  CodePipelineUrl:
+    Description: The url of the created pipeline
+    Value: !Sub https://console.aws.amazon.com/codepipeline/home?region=${AWS::Region}#/view/${CodePipeline}
+
+  ECSServiceName:
+    Description: The name of the ecs service. Update the number of desired tasks here
+    Value: !Ref ECSService
+    # Value: !GetAtt [ ECSService, Name ]
+
+  LoadBalancerDNSName:
+    Description: The url for the load balancer of your application. You must first update the number of desired tasks in the ecs service 
+    Value: !Join
+     - ''
+     - 
+        - http://
+        - !GetAtt [ LoadBalancer, DNSName ]

@@ -27,8 +27,6 @@ Metadata:
     ParameterLabels:
       SubnetId: 
         default: Subnet ID (Select 2)
-      # OtherSubnetId: 
-      #   default: Other Subnet ID
       ExistingCodeCommitRepositoryName:
         default: Existing CodeCommit Repository Name
       ExistingBranchName:
@@ -41,12 +39,8 @@ Parameters:
 
     SubnetId:
         Type: List<AWS::EC2::Subnet::Id>
-        Description: Select at two subnets in your selected VPC.
+        Description: Select at least two subnets in your selected VPC.
 
-    # OtherSubnetId:
-    #     Type: AWS::EC2::Subnet::Id
-    #     Description: Choose another subnet for the load balancer. Make sure it is not the same as 'Subnet ID'
-    
     Message:
         AllowedPattern: '[\w\.-]+'
         Description: The name of the message
@@ -231,7 +225,6 @@ Resources:
                     AssignPublicIp: ENABLED
                     Subnets: 
                         !Ref SubnetId
-                        # - !Ref SubnetId
                     SecurityGroups:
                         - !Ref SecurityGroup
             
@@ -276,8 +269,6 @@ Resources:
                 - !Ref SecurityGroup
             Subnets:
                 !Ref SubnetId
-                # - !Ref SubnetId
-                # - !Ref OtherSubnetId
 
     S3BucketForArtifacts:
         Type: AWS::S3::Bucket
@@ -351,7 +342,8 @@ Resources:
             Environment:
                 Type: LINUX_CONTAINER
                 ComputeType: BUILD_GENERAL1_SMALL
-                Image: aws/codebuild/standard:2.0
+                Image: aws/codebuild/docker:17.09.0 # No Need to install docker in buildspec file
+                # Image: aws/codebuild/standard:2.0 # Must install docker in buildspec file
                 PrivilegedMode: true
                 EnvironmentVariables:
                     - Name: ECR_REPO_URL
@@ -625,26 +617,17 @@ Outputs:
     Description: The url for the codecommit repository
     Value: !GetAtt [ CodeCommitRepository, CloneUrlHttp ]
 
-  # ECRRepositoryUrl:
-  #   Description: The url for the ECR repository. Use this in the buildspec file in your project
-  #   Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepository}"
-
   ContainerName:
     Description: The name of the created container. Use this name in the buildspec file in your project
     Value: !Join ['', [!Ref Message, 'Container']]
 
-  # CodePipelineName:
-  #   Description: The name of the created pipeline
-  #   Value: !Ref CodePipeline
-
-  CodePipelineUrl:
+ CodePipelineUrl:
     Description: The url of the created pipeline
     Value: !Sub https://console.aws.amazon.com/codepipeline/home?region=${AWS::Region}#/view/${CodePipeline}
 
   ECSServiceName:
     Description: The name of the ecs service. Update the number of desired tasks here
     Value: !Ref ECSService
-    # Value: !GetAtt [ ECSService, Name ]
 
   LoadBalancerDNSName:
     Description: The url for the load balancer of your application. You must first update the number of desired tasks in the ecs service 

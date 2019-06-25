@@ -26,7 +26,7 @@ Metadata:
     
     ParameterLabels:
       SubnetId: 
-        default: Subnet ID (Select 2)
+        default: Subnet ID (Select 2 at least)
       ExistingCodeCommitRepositoryName:
         default: Existing CodeCommit Repository Name
       ExistingBranchName:
@@ -382,9 +382,13 @@ Resources:
                                 - Name: SourceOutput
                             Configuration:
                                 BranchName: !If
-                                  - CreateNewBranch
-                                  - !If [IsStageEqualProd, 'master', !Ref Stage]
-                                  - !Ref ExistingBranchName                      
+                                    - CreateNewCodeCommitRepo
+                                    - !If [IsStageEqualProd, 'master', !Ref Stage]
+                                    - !If [CreateNewBranch, !Ref ExistingBranchName, !If [IsStageEqualProd, 'master', !Ref Stage]]
+                                # !If
+                                #   - CreateNewBranch
+                                #   - !If [IsStageEqualProd, 'master', !Ref Stage]
+                                #   - !Ref ExistingBranchName                      
                                 RepositoryName: !If 
                                   - CreateNewCodeCommitRepo
                                   - !GetAtt [CodeCommitRepository, Name ]
@@ -621,7 +625,7 @@ Outputs:
     Description: The name of the created container. Use this name in the buildspec file in your project
     Value: !Join ['', [!Ref Message, 'Container']]
 
- CodePipelineUrl:
+  CodePipelineUrl:
     Description: The url of the created pipeline
     Value: !Sub https://console.aws.amazon.com/codepipeline/home?region=${AWS::Region}#/view/${CodePipeline}
 

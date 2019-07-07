@@ -42,8 +42,8 @@ Parameters:
         Description: Select at least two subnets in your selected VPC.
 
     Message:
-        AllowedPattern: '[\w\.-]+'
-        Description: The name of the message
+        AllowedPattern: '^(?=.{1,20}$)[a-z]+([a-z]|[0-9])*(\-([a-z]|[0-9])+)*$'
+        Description: The name of the message. Only lowercase letters, dashes and numbers are allowed. Maximum length is 20 characters.
         Type: String
         
     Stage:
@@ -89,7 +89,7 @@ Resources:
     ECSTaskExecutionRole:
         Type: AWS::IAM::Role
         Properties:
-            RoleName: !Sub ${AWS::StackName}-iam-taskexecution-role
+            # RoleName: !Sub ${AWS::StackName}-iam-taskexecution-role
             AssumeRolePolicyDocument:
                 Statement:
                 - Effect: Allow
@@ -116,7 +116,7 @@ Resources:
     ECSTaskRole:
         Type: AWS::IAM::Role
         Properties:
-            RoleName: !Sub ${AWS::StackName}-iam-task-role
+            # RoleName: !Sub ${AWS::StackName}-iam-task-role
             AssumeRolePolicyDocument:
                 Statement:
                 - Effect: Allow
@@ -173,7 +173,7 @@ Resources:
     LogGroup: 
         Type: AWS::Logs::LogGroup
         Properties: 
-            LogGroupName: !Join ['/', ['/ecs', 'shouldBeTaskDefinitionName' ]]
+            LogGroupName: !Join ['/', ['/ecs', !Join ['-', [ !Ref Message, 'LogGroup' ]] ]]
 
     ECSCluster:
         Type: AWS::ECS::Cluster
@@ -282,7 +282,7 @@ Resources:
     CodeBuildServiceRole:
         Type: AWS::IAM::Role
         Properties:
-            RoleName: !Sub ${AWS::StackName}-iam-role-codebuild
+            # RoleName: !Sub ${AWS::StackName}-iam-role-codebuild
             AssumeRolePolicyDocument:
                 Statement:
                 - Effect: Allow
@@ -436,7 +436,7 @@ Resources:
     CodePipelineServiceRole:
         Type: 'AWS::IAM::Role'
         Properties:
-            RoleName: !Sub ${AWS::StackName}-iam-role-codepipeline-service-role
+            # RoleName: !Sub ${AWS::StackName}-iam-role-codepipeline-service-role
             AssumeRolePolicyDocument:
                 Version: 2012-10-17
                 Statement:
@@ -616,10 +616,15 @@ Resources:
 
 
 Outputs:
+  CodeCommitRepositoryCloneUrl:
+    Condition: CreateNewCodeCommitRepo
+    Description: The clone url for the codecommit repository
+    Value: !GetAtt [ CodeCommitRepository, CloneUrlHttp ]
+
   CodeCommitRepositoryUrl:
     Condition: CreateNewCodeCommitRepo
     Description: The url for the codecommit repository
-    Value: !GetAtt [ CodeCommitRepository, CloneUrlHttp ]
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/codesuite/codecommit/repositories/${Message}/setup?region=${AWS::Region}
 
   ContainerName:
     Description: The name of the created container. Use this name in the buildspec file in your project

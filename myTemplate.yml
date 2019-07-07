@@ -47,7 +47,8 @@ Parameters:
         Type: String
         
     Stage:
-        Description: The name of the stage
+        AllowedPattern: '^(?=.{1,10}$)[a-z]+([a-z]|[0-9])*(\-([a-z]|[0-9])+)*$'
+        Description: The name of the stage. Only lowercase letters, dashes and numbers are allowed. Maximum length is 10 characters.
         Type: String
 
     ExistingCodeCommitRepositoryName:
@@ -384,7 +385,7 @@ Resources:
                                 BranchName: !If
                                     - CreateNewCodeCommitRepo
                                     - !If [IsStageEqualProd, 'master', !Ref Stage]
-                                    - !If [CreateNewBranch, !Ref ExistingBranchName, !If [IsStageEqualProd, 'master', !Ref Stage]]
+                                    - !If [CreateNewBranch, !If [IsStageEqualProd, 'master', !Ref Stage], !Ref ExistingBranchName]
                                 # !If
                                 #   - CreateNewBranch
                                 #   - !If [IsStageEqualProd, 'master', !Ref Stage]
